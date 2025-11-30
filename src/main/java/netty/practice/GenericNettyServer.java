@@ -6,7 +6,7 @@ import io.netty.channel.nio.NioIoHandler;
 import io.netty.channel.socket.nio.NioServerSocketChannel;
 
 public abstract class GenericNettyServer {
-    final int port;
+    protected final int port;
 
     public GenericNettyServer(int port) {
         this.port = port;

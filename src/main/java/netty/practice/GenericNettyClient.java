@@ -25,7 +25,7 @@ public abstract class GenericNettyClient {
                     .remoteAddress(host, port);
             addHandlersAndSOOptions(bootstrap);
             var channelFuture = bootstrap.connect().sync();
-            channelFuture.channel().close().sync();
+            channelFuture.channel().closeFuture().sync();
         } catch (InterruptedException e) {
             LOGGER.error("Exceptions encounter...{}", e.getMessage());
             throw new RuntimeException(e);
