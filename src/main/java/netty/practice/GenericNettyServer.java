@@ -13,17 +13,19 @@ public abstract class GenericNettyServer {
     }
 
     public void start() {
-        var elg = new MultiThreadIoEventLoopGroup(NioIoHandler.newFactory());
+        var bossGroup = new MultiThreadIoEventLoopGroup(NioIoHandler.newFactory());
+        var workerGroup = new MultiThreadIoEventLoopGroup(NioIoHandler.newFactory());
         try {
             var bootstrap = new ServerBootstrap();
-            bootstrap.group(elg).channel(NioServerSocketChannel.class).localAddress(port);
+            bootstrap.group(bossGroup, workerGroup).channel(NioServerSocketChannel.class).localAddress(port);
             addChildHandlerAndSOoptions(bootstrap);
             var channelfuture = bootstrap.bind().sync();
             channelfuture.channel().closeFuture().sync();
         } catch (InterruptedException e) {
             throw new RuntimeException(e);
         } finally {
-            elg.shutdownGracefully();
+            bossGroup.shutdownGracefully();
+            workerGroup.shutdownGracefully();
         }
     }
 
