@@ -12,6 +12,8 @@ repositories {
 }
 
 dependencies {
+    // https://mvnrepository.com/artifact/com.lmax/disruptor
+    implementation("com.lmax:disruptor:4.0.0")
     implementation("io.netty:netty-all:4.2.7.Final")
     // https://mvnrepository.com/artifact/org.slf4j/slf4j-api
     implementation("org.slf4j:slf4j-api:2.0.17")

@@ -2,15 +2,15 @@ package netty.practice;
 
 import io.netty.bootstrap.Bootstrap;
 import io.netty.channel.MultiThreadIoEventLoopGroup;
-import io.netty.channel.MultithreadEventLoopGroup;
 import io.netty.channel.nio.NioIoHandler;
+import io.netty.channel.socket.nio.NioSocketChannel;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 public abstract class GenericNettyClient {
     private static final Logger LOGGER = LoggerFactory.getLogger(GenericNettyClient.class);
-    private String host;
-    private int port;
+    private final String host;
+    private final int port;
 
     public GenericNettyClient(String host, int port) {
         this.host = host;
@@ -22,7 +22,7 @@ public abstract class GenericNettyClient {
         try {
             var bootstrap = new Bootstrap();
             bootstrap.group(elg)
-                    .remoteAddress(host, port);
+                    .remoteAddress(host, port).channel(NioSocketChannel.class);
             addHandlersAndSOOptions(bootstrap);
             var channelFuture = bootstrap.connect().sync();
             channelFuture.channel().closeFuture().sync();
