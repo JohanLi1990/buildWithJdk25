@@ -1,8 +1,6 @@
 package disruptor.practice.simple;
 
 import com.lmax.disruptor.EventHandler;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 
 import java.util.concurrent.CountDownLatch;
 
@@ -19,6 +17,7 @@ public class SimpleEventHandler implements EventHandler<LongEvent> {
 
     @Override
     public void onEvent(LongEvent longEvent, long l, boolean b)  {
+        // It is very costly to do logging or System.out.println(...) here
 //        long cur = longEvent.getId();
 //        LOGGER.info("reading event id {}", cur);
 //        System.out.println(Thread.currentThread().getName() + ": Read Id " + cur);

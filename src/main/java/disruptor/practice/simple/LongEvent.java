@@ -1,6 +1,8 @@
 package disruptor.practice.simple;
 
-public class LongEvent {
+import disruptor.practice.common.IEvent;
+
+public class LongEvent implements IEvent {
 
     private long id;
 
