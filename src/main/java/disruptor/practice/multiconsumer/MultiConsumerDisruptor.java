@@ -1,6 +1,5 @@
 package disruptor.practice.multiconsumer;
 
-import com.lmax.disruptor.BlockingWaitStrategy;
 import com.lmax.disruptor.BusySpinWaitStrategy;
 import com.lmax.disruptor.RingBuffer;
 import com.lmax.disruptor.dsl.Disruptor;
@@ -15,7 +14,6 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicLong;
-import java.util.concurrent.locks.LockSupport;
 
 public class MultiConsumerDisruptor implements IDisruptor<MultiConsumerEvent> {
     private static final Logger LOGGER = LoggerFactory.getLogger(MultiConsumerDisruptor.class);
