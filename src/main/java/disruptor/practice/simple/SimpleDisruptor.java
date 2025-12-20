@@ -2,8 +2,11 @@ package disruptor.practice.simple;
 
 import com.lmax.disruptor.BlockingWaitStrategy;
 import com.lmax.disruptor.RingBuffer;
+import com.lmax.disruptor.SingleProducerSequencer;
 import com.lmax.disruptor.dsl.Disruptor;
 import com.lmax.disruptor.dsl.ProducerType;
+import org.openjdk.jol.info.ClassLayout;
+import org.openjdk.jol.info.GraphLayout;
 
 import java.nio.ByteBuffer;
 import java.util.concurrent.CountDownLatch;
@@ -23,6 +26,7 @@ public class SimpleDisruptor {
                 new BlockingWaitStrategy());
 
         disruptor.handleEventsWith(new SimpleEventHandler(c1, 1_000_000));
+//        System.out.println(ClassLayout.parseClass(SingleProducerSequencer.class).toPrintable());
         disruptor.start();
 
         RingBuffer<LongEvent> ringBuffer = disruptor.getRingBuffer();
