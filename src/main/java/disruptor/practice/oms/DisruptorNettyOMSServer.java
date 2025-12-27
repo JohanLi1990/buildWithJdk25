@@ -18,24 +18,37 @@ import org.slf4j.LoggerFactory;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.*;
 
 public class DisruptorNettyOMSServer extends GenericNettyServer {
     private static final Logger log = LoggerFactory.getLogger(DisruptorNettyOMSServer.class);
     private final List<Disruptor<TaskEvent>> disruptors;
-
+    private final int N = 8;
     public DisruptorNettyOMSServer(int port) {
         super(port);
         disruptors = new ArrayList<>();
-        for (int i = 0; i < 4; i++) {
+        for (int i = 0; i < N; i++) {
             disruptors.add(initDisruptor(i));
         }
     }
 
     private static Disruptor<TaskEvent> initDisruptor(int partitionId) {
-        Disruptor<TaskEvent> cur =  new Disruptor<>(TaskEvent::new, 1024, DaemonThreadFactory.INSTANCE,
+        Disruptor<TaskEvent> cur =  new Disruptor<>(TaskEvent::new, 2048, DaemonThreadFactory.INSTANCE,
                 ProducerType.MULTI, /* Have to use multi here, because mutltiple client*/
                 new BlockingWaitStrategy());
-        cur.handleEventsWith(new DisruptorBusinessHandler(partitionId));
+        var tFactory = new ThreadFactory() {
+            @Override
+            public Thread newThread(Runnable r) {
+                return new Thread(r, "TW-"+partitionId);
+            }
+        };
+        var es = new ThreadPoolExecutor(2, 8, 10, TimeUnit.SECONDS, new SynchronousQueue<>(false), tFactory);
+        es.setRejectedExecutionHandler((r, exec) -> {
+            log.error("TPE REJECTED task. poolSize={} active={} completed={} taskCount={}",
+                    exec.getPoolSize(), exec.getActiveCount(), exec.getCompletedTaskCount(), exec.getTaskCount());
+            throw new RejectedExecutionException("rejected");
+        });
+        cur.handleEventsWith(new DisruptorBusinessHandler(partitionId, es));
         cur.start();
         return cur;
     }

@@ -21,7 +21,7 @@ import static java.lang.Math.floorMod;
 public class NettyIOHandler extends SimpleChannelInboundHandler<TaskEvent> {
 
     // Number of Partitions:
-    private static final int N = 4;
+    private final int N;
 
     private final List<Disruptor<TaskEvent>> disruptors;
     private static final String SERVER_BUSY = "REJ:BUSY";
@@ -32,17 +32,17 @@ public class NettyIOHandler extends SimpleChannelInboundHandler<TaskEvent> {
 
     public NettyIOHandler(List<Disruptor<TaskEvent>> disruptors) {
         this.disruptors = disruptors;
+        N = disruptors.size();
     }
 
 
     @Override
     protected void channelRead0(ChannelHandlerContext ctx, TaskEvent msg) throws Exception {
         totalCounts++;
-        if ((totalCounts & 0x3FFF) == 0) {
+        if ((totalCounts & 4095) == 0) {
             LOGGER.info("published: {}, rejected:{}", totalCounts - rejected, rejected);
         }
         // compute partitions
-
         int correlationId = msg.getCorrelationId();
         int partition = correlationId < 0 ? floorMod(System.identityHashCode(ctx.channel()), N):
                 floorMod(correlationId, N);
@@ -51,8 +51,8 @@ public class NettyIOHandler extends SimpleChannelInboundHandler<TaskEvent> {
         if (!ringBuffer.tryPublishEvent(NettyIOHandler::translate, msg)) {
             // failed to publish
             rejected++;
-            ctx.channel().writeAndFlush(new TaskResponse(correlationId, partition, SERVER_BUSY, System.nanoTime(),
-                    msg.getPayload()));
+            ctx.channel().writeAndFlush(new TaskResponse(msg.getOrderId(), correlationId, partition, SERVER_BUSY,
+                    System.nanoTime()));
             LOGGER.debug("Failed to publish to Disruptor msg: {}", msg);
         }
     }

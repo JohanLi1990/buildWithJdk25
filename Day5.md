@@ -51,94 +51,190 @@ Deliverable: you can send 1 message and get 1 response.
     ```
   * Routing Strategy:
     * Correlated Task: `partition = floorMode(correlationId, N)`
-    * Uncorrelated Task: `partition = floorMod(System.identityHashCode(ctx.channel()), N);
-`
-
+    * Uncorrelated Task: `partition = floorMod(System.identityHashCode(ctx.channel()), N);`
 ---
 
-## Session 3 (1–2h): Partition inbox → familyQueues + readyFamilies
+## Session 3 (1–2h): Minimal-C skeleton — partitioned ingress + busy-gated scheduler + worker pool
 
-**Goal:** your FamilyScheduler data structures work.
+**Goal:** get the *real* architecture running with minimal features.
 
 ✅ Checklist
 
-* Events land in `familyQueues[familyKey]` FIFO
-* `readyFamilies` contains each family at most once
-* Families become “not ready” only when queue empty or currently in-flight
-* A single worker loop can pop a family and then pop its next event
+* Netty inbound extracts `familyKey`, routes to `partition = smearHash(familyKey) & (N-1)`
+* Per partition: Disruptor consumer thread is **dispatcher only** (non-blocking)
+* Per partition: `FamilyScheduler` with:
 
-Deliverable: you can “observe” fair interleaving in logs even before OMS stages exist.
+    * `FamilyState.busy` (0/1)
+    * `FamilyState.pending` FIFO
+* Worker pool executes simulated 10–20ms work and calls `scheduler.onComplete(familyKey)`
+* Ring buffer full → fast reject `REJ:BUSY`
 
+**Deliverable:** end-to-end “dispatch → execute → complete” works, with logs showing:
+
+* same family serialized
+* different families concurrent
+
+- **Key Takeaway**
+  - Disruptor Events must not escape the consumer thread
+    - RingBugger resuses TaskEvent objects
+    - Queuing them into `pending` causes data corruption.
+  - **Recursive drain on completion**
+    - Every dispatched task **must schedule the next one, or release busy**
+    ```java
+    dispatchAndDrain(state, task):
+      async work
+      onComplete:
+        next = pending.poll()
+        if next != null:
+           dispatchAndDrain(state, next)
+        else:
+           busy = 0
+           race fix:
+             if new task arrived → re-acquire busy → dispatch
+    ```
+    - This guarantees exactly 1 in-flight task per family
+    - FIFO preserved
+    - no family can wedge permanently
+  - **Lost wakeup prevention pattern**
+    ```java
+    onComplete():
+        task = queue.poll()
+        if (task != null) {
+            run(task)
+            return
+        }
+    
+        flag = IDLE
+    
+        // ---- race fix ----
+        task = queue.poll()
+        if (task != null && CAS(flag, IDLE, BUSY)) {
+            run(task)
+        }
+    ```
+    - Problem Statement:
+      - 2 threads coordinates via a `flag` and a `work queue`
+      - The operations `check queue` and `release flag` are not atomic
+    - Pattern solution:
+      - After releasing the flag, recheck the queue and reclaim ownership if work exist
 ---
 
-## Session 4 (1–2h): Single-in-flight enforcement + ordering assertions
+## Session 4 (1–2h): Correctness proof — ordering assertions + race hardening
 
-**Goal:** prove the UBS constraint.
+**Goal:** prove UBS constraint rigorously (and catch the nasty races early).
 
 ✅ Checklist
 
-* When a family is selected, it is marked **IN_FLIGHT**
-* Next event from same family is not processed until release
-* Assert `sequenceInFamily` monotonic per family at Stage1 entry (dev mode)
-* Test: create A(1..10) and B(1..10), verify ordering per family
+* Add `seqInFamily` to test events (monotonic per family)
+* Assert **completion order** per family (strictly increasing)
+* Implement the **race-safe completion** logic (poll-after-idle + CAS reclaim)
+* Deterministic test: A(1..10), B(1..10), plus mixed interleaving
+* “One hot family + others” test: hot family serialized, others progress
 
-Deliverable: correctness proof via logs.
+**Deliverable:** a repeatable test suite (even if just a main method) that fails loudly on reordering.
+
+> Note: At this point you don’t need `readyFamilies` at all — busy-gating *is* your readiness.
 
 ---
 
-## Session 5 (1–2h): Add the 4 OMS stages (mock)
+## Session 5 (1–2h): Add the 4 OMS stages (mock) on the worker side
 
-**Goal:** full pipeline end-to-end.
+**Goal:** make work look like OMS without breaking the scheduler.
 
 ✅ Checklist
 
-* Stage1 parse: can reject BAD_MSG
-* Stage2 risk: can reject RISK_*
-* Stage3 exec sim: only on ACCEPT
-* Stage4 response: exactly one response
-* Netty write-back is done safely (event-loop marshalling)
+* Worker executes Stage1→Stage4 pipeline (pure functions or mocked)
 
-Deliverable: ACK/REJ responses come back correctly.
+    * Stage1 parse → can reject `BAD_MSG`
+    * Stage2 risk → can reject `RISK_*`
+    * Stage3 exec sim → only if ACCEPT
+    * Stage4 response build → exactly one response
+* Exactly one response per inbound request (ACK/REJ)
+* Netty write-back is safe:
+
+    * marshal back to event loop (`ctx.channel().eventLoop().execute(...)`)
+    * or use a dedicated outbound queue per channel (later)
+
+**Deliverable:** client receives correct ACK/REJ for mixed workloads.
 
 ---
 
-## Session 6 (1–2h): Stress scenarios (the ones that matter)
+## Session 6 (1–2h): Stress scenarios + instrumentation (baseline numbers)
 
-**Goal:** validate hot-key + -1 behavior.
+**Goal:** validate the scenarios that actually break OMS-like systems and record baseline counters.
 
 ✅ Checklist
 
-* **30k same correlationId** + some other families:
+* Scenario 1: **30k same family** + other families
 
-    * others still make progress (no starvation)
-* **all -1 burst**:
+    * verify others progress (no global stall)
+    * record `maxPendingDepthObserved` for hot family
+* Scenario 2: **all correlationId = -1 burst**
 
-    * spreads across partitions, no accidental serialization
-* ring buffer small → more BUSY rejects but system stays responsive
+    * spreads across partitions
+    * no accidental serialization
+* Scenario 3: ring buffer small
 
-Deliverable: basic throughput/latency counters + sanity checks.
+    * more `REJ:BUSY` but system stays responsive
+* Add counters per partition:
+
+    * tasksIn / dispatched / completed
+    * enqueuedDueToBusy
+    * maxPendingDepthObserved
+    * rejectsBusy (ring buffer full)
+* Add 2–3 periodic log lines (every X ms) rather than per-task spam
+
+**Deliverable:** baseline throughput + reject rate + “looks healthy under stress” evidence.
 
 ---
 
-## Session 7 (optional, 1–2h): Improve fairness knob
+## Session 7 (1–2h): Optimization / realism step (pick 1–2 only, guided by counters)
 
-**Goal:** make it feel “real”.
+**Goal:** apply one practical optimization that *measurably* improves either tail latency or robustness.
 
-Upgrade policy from “1 event per family” to:
+Pick **one** track based on what Session 6 shows:
 
-* `maxEventsPerSlice` (e.g., 16/32)
-  or
+### Track A — Fairness knob (tail latency under hot family)
+
+Upgrade policy so hot family can’t hog worker capacity:
+
+* `maxEventsPerSlice` per family (e.g., 8/16/32) **OR**
 * time-slice budget
 
 ✅ Checklist
 
 * cold families’ tail latency improves when hot family exists
-* switching overhead doesn’t crush throughput
-* you can tune slice size and see a predictable change
+* throughput doesn’t collapse
+* you can tune slice size and see predictable changes
+
+### Track B — Bounded per-family pending (robustness under pathological hot key)
+
+Add safety limits:
+
+* if `pending.size > limit` → reject new tasks for that family (or coalesce)
+
+✅ Checklist
+
+* hot family doesn’t OOM you
+* rejection is localized to the hot family (others keep running)
+
+### Track C — Hot-path hygiene (only if scheduler overhead shows up)
+
+If you see dispatcher/scheduler dominating (unlikely with 10–20ms work, but possible later):
+
+* reduce allocations in pending queues
+* reduce contention in `FamilyState`
+* (later) consider padding / `@Contended` only if profiling shows it
+
+✅ Checklist
+
+* measured reduction in scheduler CPU or improved p99 (with your counters)
+
+**Deliverable:** one measurable improvement, plus a note of what metric justified it.
 
 ---
 
-### Why this fits 1–2h/day
+## Why this fits 1–2h/day
 
 Each session is focused on *one layer*:
 Netty routing → scheduler correctness → OMS stages → stress tests.
@@ -148,6 +244,10 @@ No single session requires deep refactors, which is the real killer in 1-hour ch
 ---
 
 Perfect. Here’s a **clean, paste-ready “Definition of Done” card for Day 5** — concise, OMS-realistic, and aligned with everything you discovered at UBS.
+
+Yep — since **Minimal-C collapses old Session 3+4 into one “scheduler + worker + ordering proof” build**, we should rewrite Sessions 3–7 so each session produces a clean, testable milestone *and* we insert an explicit **optimization / hygiene** step (but only after we have counters showing it matters).
+
+Here’s an updated plan you can paste into your notebook.
 
 ---
 

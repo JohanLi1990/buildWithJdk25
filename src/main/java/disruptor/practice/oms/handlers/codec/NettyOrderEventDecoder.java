@@ -30,7 +30,7 @@ public class NettyOrderEventDecoder extends MessageToMessageDecoder<ByteBuf> {
             out.add(res);
         } catch (NumberFormatException e) {
             // write back immediately this is rejected!
-            var resp = new TaskResponse(-1, -1, BAD_MSG, System.nanoTime(), rawInput);
+            var resp = new TaskResponse(-1, -1, -1, BAD_MSG + rawInput, System.nanoTime());
             // propagate from the tail
             ctx.channel().writeAndFlush(resp);
             LOGGER.debug("Failed to parse Order: {}", rawInput);

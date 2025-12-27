@@ -1,6 +1,5 @@
 package disruptor.practice.oms.model;
 
-import io.netty.buffer.ByteBuf;
 import io.netty.channel.Channel;
 
 public class TaskEvent {
@@ -13,7 +12,6 @@ public class TaskEvent {
     private int correlationId;
     private String payload;
     private Channel channel;
-
 
     public long getT0() {
         return t0;
@@ -73,7 +71,6 @@ public class TaskEvent {
         this.correlationId = another.getCorrelationId();
         this.payload = another.payload;
     }
-
 
 }
 
