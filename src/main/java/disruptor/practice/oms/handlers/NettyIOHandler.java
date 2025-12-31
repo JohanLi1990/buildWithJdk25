@@ -51,13 +51,14 @@ public class NettyIOHandler extends SimpleChannelInboundHandler<TaskEvent> {
         if (!ringBuffer.tryPublishEvent(NettyIOHandler::translate, msg)) {
             // failed to publish
             rejected++;
-            ctx.channel().writeAndFlush(new TaskResponse(msg.getOrderId(), correlationId, partition, SERVER_BUSY,
+            ctx.channel().writeAndFlush(new TaskResponse(msg.getOrderId(), correlationId, partition, msg.getSeqInFamily(),
+                    SERVER_BUSY,
                     System.nanoTime()));
             LOGGER.debug("Failed to publish to Disruptor msg: {}", msg);
         }
     }
 
-    private static void translate(TaskEvent event, long seq, TaskEvent in) {
+    static void translate(TaskEvent event, long seq, TaskEvent in) {
         event.clone(in);
     }
 }

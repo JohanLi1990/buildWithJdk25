@@ -9,9 +9,20 @@ public class TaskEvent {
     // Different tasks might be about the same orders, (CANCEL, AMEND, NEW, ACCEPT...)
     private long orderId;
     // correlationId
+    private int seqInFamily;
     private int correlationId;
     private String payload;
     private Channel channel;
+    public TaskEvent() {};
+
+    public TaskEvent(long t0, long orderId, int seqInFamily, int correlationId, String payload, Channel channel) {
+        this.t0 = t0;
+        this.orderId = orderId;
+        this.seqInFamily = seqInFamily;
+        this.correlationId = correlationId;
+        this.payload = payload;
+        this.channel = channel;
+    }
 
     public long getT0() {
         return t0;
@@ -58,8 +69,9 @@ public class TaskEvent {
         return "TaskEvent{" +
                 "t0=" + t0 +
                 ", orderId=" + orderId +
+                ", seqInFamily=" + seqInFamily +
                 ", correlationId=" + correlationId +
-                ", payload=" + payload +
+                ", payload='" + payload + '\'' +
                 ", channel=" + channel +
                 '}';
     }
@@ -70,8 +82,16 @@ public class TaskEvent {
         this.orderId = another.orderId;
         this.correlationId = another.getCorrelationId();
         this.payload = another.payload;
+        this.setSeqInFamily(another.getSeqInFamily());
     }
 
+    public int getSeqInFamily() {
+        return seqInFamily;
+    }
+
+    public void setSeqInFamily(int seqInFamily) {
+        this.seqInFamily = seqInFamily;
+    }
 }
 
 

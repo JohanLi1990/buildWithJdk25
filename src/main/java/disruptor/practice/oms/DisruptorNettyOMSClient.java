@@ -1,6 +1,5 @@
 package disruptor.practice.oms;
 
-import disruptor.practice.netty.DisruptorNettyClient2;
 import disruptor.practice.oms.handlers.NettyClientHandler;
 import io.netty.bootstrap.Bootstrap;
 import io.netty.channel.ChannelInitializer;

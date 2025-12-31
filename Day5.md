@@ -74,7 +74,7 @@ Deliverable: you can send 1 message and get 1 response.
 * same family serialized
 * different families concurrent
 
-- **Key Takeaway**
+### **Key Takeaway**
   - Disruptor Events must not escape the consumer thread
     - RingBugger resuses TaskEvent objects
     - Queuing them into `pending` causes data corruption.
@@ -135,6 +135,80 @@ Deliverable: you can send 1 message and get 1 response.
 
 > Note: At this point you don’t need `readyFamilies` at all — busy-gating *is* your readiness.
 
+### **Key Takeaway**
+
+- Dangerous Window:
+```
+poll() -> empty
+    (producer enqueues here, but sees busy==1)
+busy -> 0
+return
+
+```
+> That is why we always do release -> recheck -> reclaim to prevent stranded task
+
+Correct pattern
+```
+next = pending.poll();
+if (next != null) dispatch(next);
+
+releaseHook();          // test injection window
+busy CAS(1 -> 0);
+
+next = pending.poll();
+if (next == null) return;   // truly idle
+
+if (busy CAS(0 -> 1)) dispatch(next);
+```
+
+- Tests Written
+  - ✅ Test 1: Deterministic interleaving 
+    - Purpose:
+      - prove strict FIFO per family under mixed arrivals 
+    - Pattern:
+      - A(1), B(1), A(2), B(2)… 
+      - assert completion order per family 
+      - assert total completion
+
+  - ✅ Test 2: Hot family + others progress 
+    - Purpose:
+      - prove no starvation 
+      - prove isolation 
+    - Pattern:
+      - family 999 → 10k tasks (hot)
+      - family 1,2 → 1k tasks each 
+    - assert:
+      - family 1 & 2 finish early (~10s)
+      - family 999 continues serialized 
+      - all complete eventually
+
+    - Key learning:
+      - For any ThreadPoolExecutor: `core thread -> queue fill up -> additional threads if less than maxPoolSize`
+      - Executor configuration (core threads!) directly impacts perceived fairness.
+
+  - ✅ Test 3: Race Hammer 
+    - Purpose:
+      - deterministically hit the lost-wakeup window 
+      - prove Part B correctness 
+    - Pattern:
+      - inject tasks exactly between poll & release 
+      - finite injections 
+    - assert:
+      - no stall 
+      - no ordering violation 
+      - exact completion count
+
+- Testing Mistakes 
+  - ❌ Misinterpreting latency 
+    - Thread.sleep(10) ≠ 10ms 
+    - OS jitter × 10k = seconds of “mystery delay” 
+  - ✅ Correct fix 
+    - LockSupport.parkNanos 
+    - deterministic timing 
+    - cleaner mental model
+
+- **Key Patterns**
+  - **Lost wake up prevention pattern**: `pool -> release -> recheck -> reclaim`
 ---
 
 ## Session 5 (1–2h): Add the 4 OMS stages (mock) on the worker side

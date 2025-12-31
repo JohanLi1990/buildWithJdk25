@@ -24,13 +24,14 @@ public class NettyOrderEventDecoder extends MessageToMessageDecoder<ByteBuf> {
             // PAYLOAD example: 78840341|2|BUY 100 TSLA
             res.setOrderId(Long.parseLong(fields[0]));
             res.setCorrelationId(Integer.parseInt(fields[1]));
-            res.setPayload(fields[2]);
+            res.setSeqInFamily(Integer.parseInt(fields[2]));
+            res.setPayload(fields[3]);
             res.setT0(System.nanoTime());
             res.setChannel(ctx.channel());
             out.add(res);
         } catch (NumberFormatException e) {
             // write back immediately this is rejected!
-            var resp = new TaskResponse(-1, -1, -1, BAD_MSG + rawInput, System.nanoTime());
+            var resp = new TaskResponse(-1, -1, -1, -1,BAD_MSG + rawInput, System.nanoTime());
             // propagate from the tail
             ctx.channel().writeAndFlush(resp);
             LOGGER.debug("Failed to parse Order: {}", rawInput);
