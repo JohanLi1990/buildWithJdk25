@@ -15,7 +15,6 @@ import org.slf4j.LoggerFactory;
 
 import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicInteger;
-import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.concurrent.atomic.LongAdder;
 import java.util.function.Consumer;
@@ -138,7 +137,7 @@ class DisruptorBusinessHandlerTest {
             if (k <= 0) return;
             int seq = sequenceGenerator.get(family).incrementAndGet();
             TaskObject to = new TaskObject(-1, family, seq, null, false,
-                    "Injected@"+seq);
+                    "Injected@"+seq, 0L);
             familyState.getPending().offer(to);
         };
 

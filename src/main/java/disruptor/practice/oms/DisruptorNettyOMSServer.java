@@ -33,7 +33,7 @@ public class DisruptorNettyOMSServer extends GenericNettyServer {
         channel.eventLoop().execute(() -> {
             TaskResponse msg = new TaskResponse(taskObject.getOrderId(),
                     taskObject.getCorrelationId(),
-                    partitionId, taskObject.getSeqInFamily(), res, System.nanoTime());
+                    partitionId, taskObject.getSeqInFamily(), res, taskObject.getT0(), System.nanoTime(), taskObject.getPayload());
             if (taskObject.isEob()) {
                 channel.writeAndFlush(msg);
             } else {

@@ -13,7 +13,10 @@ public class TaskEvent {
     private int correlationId;
     private String payload;
     private Channel channel;
-    public TaskEvent() {};
+    private TaskType taskType;
+    private String rejectReason;
+
+    public TaskEvent() {}
 
     public TaskEvent(long t0, long orderId, int seqInFamily, int correlationId, String payload, Channel channel) {
         this.t0 = t0;
@@ -22,7 +25,21 @@ public class TaskEvent {
         this.correlationId = correlationId;
         this.payload = payload;
         this.channel = channel;
+        this.taskType = TaskType.NORMAL;
+        this.rejectReason = "";
     }
+
+    public TaskEvent(TaskType taskType, String payload, String reason, Channel channel) {
+        this.t0 = -1;
+        this.orderId = -1;
+        this.seqInFamily = -1;
+        this.correlationId = -1;
+        this.payload = payload;
+        this.channel = channel;
+        this.taskType = taskType;
+        this.rejectReason = reason;
+    }
+
 
     public long getT0() {
         return t0;
@@ -73,6 +90,8 @@ public class TaskEvent {
                 ", correlationId=" + correlationId +
                 ", payload='" + payload + '\'' +
                 ", channel=" + channel +
+                ", taskType=" + taskType +
+                ", rejectReason='" + rejectReason + '\'' +
                 '}';
     }
 
@@ -83,6 +102,8 @@ public class TaskEvent {
         this.correlationId = another.getCorrelationId();
         this.payload = another.payload;
         this.setSeqInFamily(another.getSeqInFamily());
+        this.taskType = another.getTaskType();
+        this.rejectReason = another.getRejectReason();
     }
 
     public int getSeqInFamily() {
@@ -91,6 +112,22 @@ public class TaskEvent {
 
     public void setSeqInFamily(int seqInFamily) {
         this.seqInFamily = seqInFamily;
+    }
+
+    public TaskType getTaskType() {
+        return taskType;
+    }
+
+    public void setTaskType(TaskType taskType) {
+        this.taskType = taskType;
+    }
+
+    public String getRejectReason() {
+        return rejectReason;
+    }
+
+    public void setRejectReason(String rejectReason) {
+        this.rejectReason = rejectReason;
     }
 }
 

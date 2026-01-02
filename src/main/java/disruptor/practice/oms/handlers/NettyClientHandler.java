@@ -1,8 +1,10 @@
 package disruptor.practice.oms.handlers;
 
+import io.netty.buffer.ByteBuf;
 import io.netty.buffer.ByteBufUtil;
 import io.netty.channel.ChannelDuplexHandler;
 import io.netty.channel.ChannelHandlerContext;
+import io.netty.util.CharsetUtil;
 import io.netty.util.ReferenceCountUtil;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -13,10 +15,13 @@ import java.util.Map;
 public class NettyClientHandler extends ChannelDuplexHandler {
 
     private static final Logger log = LoggerFactory.getLogger(NettyClientHandler.class);
-    private static final int LIMIT = 40_000; // 40k events
+    private static final int LIMIT = 1000; // 40k events
     private int maxNumOfTasks = 0;
     private int completed = 0;
     private Map<Integer, Integer> correlationSequence = new HashMap<>();
+    private static final String DEFAULT_PAYLOAD = "BUY 100 TSLA";
+    private static final String ILLEGAL_PAYLOAD = "BUY 100 BITCOIN";
+    private static final String WRONG_PAYLOAD = "";
 
     @Override
     public void channelActive(ChannelHandlerContext ctx) throws Exception {
@@ -52,12 +57,23 @@ public class NettyClientHandler extends ChannelDuplexHandler {
             correlationId = 11; // TBR events
         }
         correlationSequence.put(correlationId, correlationSequence.getOrDefault(correlationId, 0) + 1);
-        return curOrderId+"|"+correlationId+"|" + correlationSequence.get(correlationId) +"|Description\n";
+        StringBuilder res = new StringBuilder();
+        String actualPayLoad = switch (maxNumOfTasks % 7) {
+            case 0 -> ILLEGAL_PAYLOAD;
+            case 3 -> WRONG_PAYLOAD;
+            default -> DEFAULT_PAYLOAD;
+        };
+        res.append(curOrderId).append("|")
+                .append(correlationId).append("|")
+                .append(correlationSequence.get(correlationId)).append("|")
+                .append(actualPayLoad).append("\n");
+        return res.toString();
 
     }
 
     @Override
     public void channelRead(ChannelHandlerContext ctx, Object msg) throws Exception {
+        log.debug("{}", ((ByteBuf) msg).toString(CharsetUtil.UTF_8));
         completed++;
         if ((completed & 1023) == 0) {
             log.info("{} msg completed!", completed);

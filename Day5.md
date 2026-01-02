@@ -231,6 +231,18 @@ if (busy CAS(0 -> 1)) dispatch(next);
 
 **Deliverable:** client receives correct ACK/REJ for mixed workloads.
 
+### Key takeaways
+
+- Creating a second write-back path in the decoder 
+  - Mistake: On parse failure, decoder wrote back immediately (ctx.writeAndFlush) → two response paths (decoder vs worker).
+  - Fix: Decoder never writes. It emits TaskEvent(taskType=INVALID, rejectReason=...) and the worker pipeline 
+  builds the REJ.
+
+- “Server busy” response path nuance 
+  - Observation: tryPublishEvent failure means the event never enters Disruptor, so an immediate REJ is fine (no double response). 
+  - Best practice: Still marshal writes onto the channel event loop (you did), and optionally centralize the “safe write” pattern for consistency.
+
+So always use the channel event loop for writeback.
 ---
 
 ## Session 6 (1–2h): Stress scenarios + instrumentation (baseline numbers)
