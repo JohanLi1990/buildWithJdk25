@@ -8,7 +8,7 @@
     <logger name="io.netty.handler.logging.LoggingHandler" level="DEBUG" additivity="false">
         <appender-ref ref="STDOUT"/>
     </logger>
-    <logger name="disruptor.practice.oms.handlers.NettyClientHandler" level="DEBUG" additivity="false">
+    <logger name="disruptor.practice.oms.handlers.NettyClientHandler" level="INFO" additivity="false">
         <appender-ref ref="STDOUT"/>
     </logger>
     <root level="INFO">

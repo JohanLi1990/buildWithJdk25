@@ -5,15 +5,16 @@ import disruptor.practice.common.CompletionSink;
 import disruptor.practice.common.ReleaseHook;
 import disruptor.practice.oms.model.Decision;
 import disruptor.practice.oms.model.FamilyState;
+import disruptor.practice.oms.model.PartitionMetrics;
 import disruptor.practice.oms.model.StageCtx;
 import disruptor.practice.oms.model.TaskEvent;
 import disruptor.practice.oms.model.TaskObject;
 import disruptor.practice.oms.model.TaskResponse;
 import disruptor.practice.oms.model.TaskType;
-import io.netty.channel.Channel;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.util.Queue;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.LinkedBlockingQueue;
@@ -21,6 +22,7 @@ import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.atomic.LongAdder;
 import java.util.concurrent.locks.LockSupport;
 
 
@@ -33,13 +35,20 @@ public class DisruptorBusinessHandler implements EventHandler<TaskEvent> {
     private final ConcurrentHashMap<Integer, FamilyState> map = new ConcurrentHashMap<>();
     private final int partitionId;
     private final ThreadPoolExecutor tpe;
-    private long tasksIn;
-    private final AtomicLong tasksCompleted;
-    private final AtomicLong tasksDispatched;
-    private long enqueuedDueToBusy;
-    private long maxPendingDepthObserved;
     private final CompletionSink sink;
     private final ReleaseHook releaseHook;
+    private final AtomicInteger tick = new AtomicInteger();
+
+    public int tick() {
+        return tick.incrementAndGet();
+    }
+
+    public PartitionMetrics getMetrics() {
+        return metrics;
+    }
+
+    private final PartitionMetrics metrics;
+
 
     /**
      * Dispatcher thread, submit task to ThreadPoolExecutor for asynchronous execution
@@ -51,11 +60,8 @@ public class DisruptorBusinessHandler implements EventHandler<TaskEvent> {
     public DisruptorBusinessHandler(int partitionId, ThreadPoolExecutor es, CompletionSink sink, ReleaseHook releaseHook) {
         this.partitionId = partitionId;
         this.tpe = es;
-        tasksIn = 0;
-        tasksCompleted = new AtomicLong();
-        tasksDispatched = new AtomicLong();
-        enqueuedDueToBusy = 0;
-        maxPendingDepthObserved = 0;
+        this.metrics = new PartitionMetrics(new AtomicLong(0), new LongAdder(),new LongAdder(), new AtomicLong(0),
+                new AtomicLong(0), new AtomicLong(0));
         this.sink = sink;
         this.releaseHook = releaseHook;
     }
@@ -63,27 +69,31 @@ public class DisruptorBusinessHandler implements EventHandler<TaskEvent> {
 
     @Override
     public void onEvent(TaskEvent event, long sequence, boolean endOfBatch) throws Exception {
-        tasksIn++;
-        disruptor.practice.oms.model.TaskObject cur = new disruptor.practice.oms.model.TaskObject(event, endOfBatch);
-        disruptor.practice.oms.model.FamilyState state = map.computeIfAbsent(event.getCorrelationId(), (_) -> new disruptor.practice.oms.model.FamilyState(new AtomicInteger(0),
+//        tasksIn++;
+        metrics.onTaskIn();
+        TaskObject cur = new TaskObject(event, endOfBatch);
+        int familyKey = event.getCorrelationId();
+        familyKey = familyKey < 0 ? (int)event.getOrderId() % 18: familyKey;
+        FamilyState state = map.computeIfAbsent(familyKey, (_) -> new FamilyState(new AtomicInteger(0),
                 new LinkedBlockingQueue<>()));
         if (state.getBusy().compareAndSet(0, 1)) {
-            tasksDispatched.incrementAndGet();
+            metrics.onDispatched();
+            metrics.onAddInFlightFamiliesCount();
             dispatchAndDrain(state, cur);
         } else {
             state.getPending().offer(cur);
-            enqueuedDueToBusy++;
-            maxPendingDepthObserved = Math.max(state.getPending().size(), maxPendingDepthObserved);
+            metrics.onEnqueuedDueToBusy();
+            metrics.onMaxPendingDepthObserved(state.getPending().size());
         }
     }
 
-    private void dispatchAndDrain(disruptor.practice.oms.model.FamilyState state, disruptor.practice.oms.model.TaskObject event) {
+    private void dispatchAndDrain(FamilyState state, TaskObject event) {
         // before session 5
 //        singleStageProcessing(state, event);
         multiStageProcessing(state, event);
     }
 
-    private void singleStageProcessing(disruptor.practice.oms.model.FamilyState state, disruptor.practice.oms.model.TaskObject event) {
+    private void singleStageProcessing(FamilyState state, TaskObject event) {
         CompletableFuture.supplyAsync(() -> {
             try {
                 LOGGER.debug("partition-{} processing heavy logic for event-id {}, family:{}", partitionId,
@@ -96,14 +106,12 @@ public class DisruptorBusinessHandler implements EventHandler<TaskEvent> {
                 return "Event not processed";
             }
         }, tpe).thenAccept((s) -> {
-            sink.onComplete(event, s, partitionId);
-            long curCompleted = tasksCompleted.incrementAndGet();
-            if ((curCompleted & 255) == 0) {
-                LOGGER.debug("partition {} -> tasksIn:{}; tasksCompleted:{}; tasksDispatched:{}; " +
-                                "enqueuedDueToBusy:{}; " +
-                                "maxPendingDepthObserved:{}, currentPoolSize:{}, active:{}, execQueue:{}",
-                        partitionId, tasksIn, curCompleted, tasksDispatched.get(), enqueuedDueToBusy,
-                        maxPendingDepthObserved, tpe.getPoolSize(), tpe.getActiveCount(), tpe.getQueue().size());
+            TaskResponse taskResponse = new TaskResponse(event.getOrderId(), event.getCorrelationId(), partitionId,
+                    event.getSeqInFamily(), s, event.getT0(), System.nanoTime(), event.getPayload());
+            sink.onComplete(event, taskResponse);
+            metrics.onCompleted();
+            if ((metrics.currentCompleted() & 255) == 0) {
+                metrics.debugLog(partitionId, tpe.getPoolSize(), tpe.getActiveCount(), tpe.getQueue().size());
             }
         }).whenComplete((_, ex) -> {
             if (ex != null) {
@@ -139,14 +147,8 @@ public class DisruptorBusinessHandler implements EventHandler<TaskEvent> {
                     ctx.getDecision(), e2e, s1, s2, s3, s4);
             return ctx;
         }, tpe).thenAccept((ctx -> {
-            // no completion sink involved here.. straight away async write back
-            Channel channel = taskObject.getChannel();
-            channel.eventLoop().execute(() -> {
-                channel.write(ctx.getTaskResponse());
-                if (taskObject.isEob()) {
-                    channel.flush();
-                }
-            });
+            sink.onComplete(taskObject, ctx.getTaskResponse());
+            metrics.onCompleted();
         })).whenComplete((_, ex) -> {
             if (ex != null) {
                 LOGGER.error("partition {} family {} failed, {}", partitionId, taskObject.getCorrelationId(), ex.getMessage());
@@ -243,11 +245,29 @@ public class DisruptorBusinessHandler implements EventHandler<TaskEvent> {
         ctx.setT4(System.nanoTime());
     }
 
+    public record PendingStats(long familiesSeen, long familiesWithPending, long pendingTotal, long  pendingMaxNow) {}
+
+    public PendingStats samplePending() {
+        long famSeen = this.map.size();
+        long familiesWithPending = 0;
+        long pendingTotal = 0;
+        long pendingMax = 0;
+        for (var ent : map.entrySet()) {
+            int pendingSize = ent.getValue().getPending().size();
+            if (pendingSize > 0) {
+                familiesWithPending++;
+                pendingTotal += pendingSize;
+                pendingMax = Math.max(pendingSize, pendingMax);
+            }
+        }
+        return new PendingStats(famSeen, familiesWithPending, pendingTotal, pendingMax);
+    }
+
 
     private void releaseLoop(FamilyState state, TaskObject event) {
         TaskObject next = state.getPending().poll();
         if (next != null) {
-            tasksDispatched.incrementAndGet();
+            metrics.onDispatched();
             dispatchAndDrain(state, next);
             return;
         }
@@ -263,11 +283,12 @@ public class DisruptorBusinessHandler implements EventHandler<TaskEvent> {
         // this windows is actually safe because busy flag is already rest to 0
         // If busy==0, producers are responsible for (re)starting the drain.
         if (next == null) {
+            metrics.onDecInFlightFamiliesCount();
             return;
         }
         // reclaim and continue draining
         if (state.getBusy().compareAndSet(0, 1)) {
-            tasksDispatched.incrementAndGet();
+            metrics.onDispatched();
             dispatchAndDrain(state, next);
         }
     }
@@ -302,5 +323,9 @@ public class DisruptorBusinessHandler implements EventHandler<TaskEvent> {
         }
 
 
+    }
+
+    public PartitionMetrics.PartitionMetricSnapshot snapshot(long nowNs) {
+        return this.metrics.snapshot(nowNs, tpe.getPoolSize(), tpe.getActiveCount(), tpe.getQueue().size());
     }
 }

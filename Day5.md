@@ -272,6 +272,8 @@ So always use the channel event loop for writeback.
 
 **Deliverable:** baseline throughput + reject rate + “looks healthy under stress” evidence.
 
+### Key Takeaway
+**Correctness first, then throughput, then latency**
 ---
 
 ## Session 7 (1–2h): Optimization / realism step (pick 1–2 only, guided by counters)

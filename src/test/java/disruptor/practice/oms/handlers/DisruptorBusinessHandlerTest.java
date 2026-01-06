@@ -9,6 +9,7 @@ import disruptor.practice.common.CompletionSink;
 import disruptor.practice.common.ReleaseHook;
 import disruptor.practice.oms.model.TaskEvent;
 import disruptor.practice.oms.model.TaskObject;
+import disruptor.practice.oms.model.TaskResponse;
 import org.junit.jupiter.api.Test;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -31,8 +32,9 @@ class DisruptorBusinessHandlerTest {
         AtomicReference<Throwable> failure = new AtomicReference<>();
         final ConcurrentHashMap<Integer, AtomicInteger> expected = new ConcurrentHashMap<>();
 
+
         @Override
-        public void onComplete(TaskObject task, String result, int partitionId) {
+        public void onComplete(TaskObject task, TaskResponse resp) {
             try {
                 int exp = expected.computeIfAbsent(task.getCorrelationId(), (_) -> new AtomicInteger(1)).getAndIncrement();
                 assertEquals(exp, task.getSeqInFamily(), "family=" + task.getCorrelationId());

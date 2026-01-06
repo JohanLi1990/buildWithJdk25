@@ -24,10 +24,13 @@ public abstract class GenericNettyServer {
         } catch (InterruptedException e) {
             throw new RuntimeException(e);
         } finally {
+            additionalShutdownSequence();
             bossGroup.shutdownGracefully();
             workerGroup.shutdownGracefully();
         }
     }
+
+    protected void additionalShutdownSequence() {}
 
     protected abstract void addChildHandlerAndSOoptions(ServerBootstrap bootstrap);
 

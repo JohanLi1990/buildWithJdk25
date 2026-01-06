@@ -36,7 +36,7 @@ public class NettyOrderEventDecoder extends MessageToMessageDecoder<ByteBuf> {
             badMessage.setT0(System.nanoTime());
             out.add(badMessage);
             // propagate from the tail
-            LOGGER.debug("Failed to parse Order: {}", rawInput);
+            LOGGER.info("Failed to parse Order: {}", rawInput);
         }
     }
 }

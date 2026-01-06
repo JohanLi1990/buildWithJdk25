@@ -15,7 +15,7 @@ import java.util.Map;
 public class NettyClientHandler extends ChannelDuplexHandler {
 
     private static final Logger log = LoggerFactory.getLogger(NettyClientHandler.class);
-    private static final int LIMIT = 1000; // 40k events
+    private static final int LIMIT = 40_000; // 40k events
     private int maxNumOfTasks = 0;
     private int completed = 0;
     private Map<Integer, Integer> correlationSequence = new HashMap<>();
@@ -27,7 +27,8 @@ public class NettyClientHandler extends ChannelDuplexHandler {
     public void channelActive(ChannelHandlerContext ctx) throws Exception {
         // send the data from here.
 //        sendOneTask(ctx);
-        sendManayTask(ctx);
+//        sendManayTask(ctx);
+        sendBurst(ctx, 11);
     }
 
     private void sendOneTask(ChannelHandlerContext ctx) {
@@ -41,6 +42,16 @@ public class NettyClientHandler extends ChannelDuplexHandler {
     private void sendManayTask(ChannelHandlerContext ctx) {
         while (ctx.channel().isWritable() && maxNumOfTasks < LIMIT) {
             String curMsg = createOneMessage(maxNumOfTasks++);
+            var cur = ctx.alloc().ioBuffer(ByteBufUtil.utf8MaxBytes(curMsg));
+            ByteBufUtil.writeUtf8(cur, curMsg);
+            ctx.write(cur);
+        }
+        ctx.flush();
+    }
+
+    private void sendBurst(ChannelHandlerContext ctx, int cusCorrId) {
+        while (ctx.channel().isWritable() && maxNumOfTasks < LIMIT) {
+            String curMsg = createOneMessage(maxNumOfTasks++, cusCorrId);
             var cur = ctx.alloc().ioBuffer(ByteBufUtil.utf8MaxBytes(curMsg));
             ByteBufUtil.writeUtf8(cur, curMsg);
             ctx.write(cur);
@@ -68,7 +79,20 @@ public class NettyClientHandler extends ChannelDuplexHandler {
                 .append(correlationSequence.get(correlationId)).append("|")
                 .append(actualPayLoad).append("\n");
         return res.toString();
+    }
 
+    private String createOneMessage(int maxNumOfTasks, int customCorrelationId) {
+        int curOrderId = maxNumOfTasks + 13;
+        int correlationId = customCorrelationId;
+
+        correlationSequence.put(correlationId, correlationSequence.getOrDefault(correlationId, 0) + 1);
+        StringBuilder res = new StringBuilder();
+        String actualPayLoad = DEFAULT_PAYLOAD;
+        res.append(curOrderId).append("|")
+                .append(correlationId).append("|")
+                .append(correlationSequence.get(correlationId)).append("|")
+                .append(actualPayLoad).append("\n");
+        return res.toString();
     }
 
     @Override
@@ -84,7 +108,7 @@ public class NettyClientHandler extends ChannelDuplexHandler {
     @Override
     public void channelWritabilityChanged(ChannelHandlerContext ctx) throws Exception {
         if (ctx.channel().isWritable()) {
-            sendManayTask(ctx);
+            sendBurst(ctx, 11);
         }
     }
 }
