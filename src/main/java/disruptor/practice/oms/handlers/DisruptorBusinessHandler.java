@@ -5,16 +5,16 @@ import disruptor.practice.common.CompletionSink;
 import disruptor.practice.common.ReleaseHook;
 import disruptor.practice.oms.model.Decision;
 import disruptor.practice.oms.model.FamilyState;
-import disruptor.practice.oms.model.PartitionMetrics;
 import disruptor.practice.oms.model.StageCtx;
 import disruptor.practice.oms.model.TaskEvent;
 import disruptor.practice.oms.model.TaskObject;
 import disruptor.practice.oms.model.TaskResponse;
 import disruptor.practice.oms.model.TaskType;
+import disruptor.practice.oms.monitoring.LatencyRecorder;
+import disruptor.practice.oms.monitoring.PartitionMetrics;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import java.util.Queue;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.LinkedBlockingQueue;
@@ -48,7 +48,8 @@ public class DisruptorBusinessHandler implements EventHandler<TaskEvent> {
     }
 
     private final PartitionMetrics metrics;
-
+    private final LatencyRecorder hotRecorder;
+    private final LatencyRecorder coldRecorder;
 
     /**
      * Dispatcher thread, submit task to ThreadPoolExecutor for asynchronous execution
@@ -64,7 +65,10 @@ public class DisruptorBusinessHandler implements EventHandler<TaskEvent> {
                 new AtomicLong(0), new AtomicLong(0));
         this.sink = sink;
         this.releaseHook = releaseHook;
+        this.hotRecorder = new LatencyRecorder();
+        this.coldRecorder = new LatencyRecorder();
     }
+
 
 
     @Override
@@ -76,6 +80,7 @@ public class DisruptorBusinessHandler implements EventHandler<TaskEvent> {
         familyKey = familyKey < 0 ? (int)event.getOrderId() % 18: familyKey;
         FamilyState state = map.computeIfAbsent(familyKey, (_) -> new FamilyState(new AtomicInteger(0),
                 new LinkedBlockingQueue<>()));
+        cur.setT1Enq(System.nanoTime());
         if (state.getBusy().compareAndSet(0, 1)) {
             metrics.onDispatched();
             metrics.onAddInFlightFamiliesCount();
@@ -128,7 +133,9 @@ public class DisruptorBusinessHandler implements EventHandler<TaskEvent> {
      */
 
     private void multiStageProcessing(FamilyState state, TaskObject taskObject) {
+        long tSubmit = System.nanoTime();
         CompletableFuture.supplyAsync(() -> {
+            long t2Start = System.nanoTime();
             StageCtx ctx = new StageCtx();
             ctx.setT0(taskObject.getT0());
             validationAndBusinessParsing(taskObject, ctx);
@@ -136,15 +143,18 @@ public class DisruptorBusinessHandler implements EventHandler<TaskEvent> {
             execSimulation(taskObject, ctx);
             buildResponse(taskObject, ctx);
 
-            long e2e = (ctx.getT4() - ctx.getT0()); // in ns
-            long s1 = (ctx.getT1() - ctx.getT0());
-            long s2 = (ctx.getT2() - ctx.getT1());
-            long s3 = (ctx.getT3() - ctx.getT2());
-            long s4 = (ctx.getT4() - ctx.getT3());
-            LOGGER.debug("OrderId:{}, correlationId:{}, seq:{}, decision:{} , e2e:{}ns, s1:{}ns, s2:{}ns, s3:{}ns, " +
-                            "s4:{}ns ",
-                    taskObject.getOrderId(), taskObject.getCorrelationId(), taskObject.getSeqInFamily(),
-                    ctx.getDecision(), e2e, s1, s2, s3, s4);
+            long qTotal = t2Start - taskObject.getT1Enq(); // “time since arrival to work start”
+            long execQ = t2Start - tSubmit;                // “executor wait” (optional but useful)
+            long e2e = (ctx.getT4() - ctx.getT0());
+            long svc = ctx.getT4() - t2Start;               // “work time”
+
+            if (taskObject.getCorrelationId() == 11) {
+                // hot
+                hotRecorder.record(e2e, qTotal, svc, execQ);
+            } else {
+                coldRecorder.record(e2e, qTotal, svc, execQ);
+            }
+
             return ctx;
         }, tpe).thenAccept((ctx -> {
             sink.onComplete(taskObject, ctx.getTaskResponse());
@@ -327,5 +337,13 @@ public class DisruptorBusinessHandler implements EventHandler<TaskEvent> {
 
     public PartitionMetrics.PartitionMetricSnapshot snapshot(long nowNs) {
         return this.metrics.snapshot(nowNs, tpe.getPoolSize(), tpe.getActiveCount(), tpe.getQueue().size());
+    }
+
+    public LatencyRecorder.LatencySnapshot hotLatencySnapshot() {
+        return this.hotRecorder.snapshot();
+    }
+
+    public LatencyRecorder.LatencySnapshot coldLatencySnapshot() {
+        return this.coldRecorder.snapshot();
     }
 }

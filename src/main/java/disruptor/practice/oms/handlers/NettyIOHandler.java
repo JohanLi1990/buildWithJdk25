@@ -40,7 +40,8 @@ public class NettyIOHandler extends SimpleChannelInboundHandler<TaskEvent> {
     @Override
     protected void channelRead0(ChannelHandlerContext ctx, TaskEvent msg) throws Exception {
         totalCounts++;
-        if ((totalCounts & 4095) == 0) {
+//        LOGGER.info("published: {}, rejected:{}", totalCounts - rejectsBusy, rejectsBusy);
+        if ((totalCounts & 255) == 0) {
             LOGGER.info("published: {}, rejected:{}", totalCounts - rejectsBusy, rejectsBusy);
         }
         // compute partitions
@@ -57,7 +58,7 @@ public class NettyIOHandler extends SimpleChannelInboundHandler<TaskEvent> {
                     msg.getSeqInFamily(),
                     SERVER_BUSY,
                     -1, -1, msg.getPayload())));
-//            LOGGER.info("Failed to publish to Disruptor msg: {}", msg);
+            LOGGER.info("Failed to publish to Disruptor msg: {}", msg);
         }
     }
 
