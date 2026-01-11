@@ -22,6 +22,8 @@ dependencies {
     implementation("org.openjdk.jol:jol-core:0.17")
     implementation("ch.qos.logback:logback-classic:1.5.21")
     implementation("ch.qos.logback:logback-core:1.5.21")
+    // Source: https://mvnrepository.com/artifact/org.hdrhistogram/HdrHistogram
+    implementation("org.hdrhistogram:HdrHistogram:2.2.2")
     testImplementation(platform("org.junit:junit-bom:5.10.0"))
     testImplementation("org.junit.jupiter:junit-jupiter")
     testRuntimeOnly("org.junit.platform:junit-platform-launcher")

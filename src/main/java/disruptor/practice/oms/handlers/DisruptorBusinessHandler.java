@@ -3,6 +3,7 @@ package disruptor.practice.oms.handlers;
 import com.lmax.disruptor.EventHandler;
 import disruptor.practice.common.CompletionSink;
 import disruptor.practice.common.ReleaseHook;
+import disruptor.practice.oms.model.ConfigHolder;
 import disruptor.practice.oms.model.Decision;
 import disruptor.practice.oms.model.FamilyState;
 import disruptor.practice.oms.model.StageCtx;
@@ -10,11 +11,13 @@ import disruptor.practice.oms.model.TaskEvent;
 import disruptor.practice.oms.model.TaskObject;
 import disruptor.practice.oms.model.TaskResponse;
 import disruptor.practice.oms.model.TaskType;
+import disruptor.practice.oms.monitoring.HdrLatencyRecorder;
 import disruptor.practice.oms.monitoring.LatencyRecorder;
 import disruptor.practice.oms.monitoring.PartitionMetrics;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.nio.charset.StandardCharsets;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.LinkedBlockingQueue;
@@ -23,6 +26,7 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.LongAdder;
+import java.util.concurrent.locks.Lock;
 import java.util.concurrent.locks.LockSupport;
 
 
@@ -38,6 +42,9 @@ public class DisruptorBusinessHandler implements EventHandler<TaskEvent> {
     private final CompletionSink sink;
     private final ReleaseHook releaseHook;
     private final AtomicInteger tick = new AtomicInteger();
+    private static final ThreadLocal<byte[]> TL_BUF = ThreadLocal.withInitial(() -> new byte[256 * 1024]);
+    static volatile int ALLOC_SINK; // basically tells JIT, do NOT optimize the allocation there, do not
+    // reorder, or eliminate (visiblie and memory barriers)
 
     public int tick() {
         return tick.incrementAndGet();
@@ -48,8 +55,11 @@ public class DisruptorBusinessHandler implements EventHandler<TaskEvent> {
     }
 
     private final PartitionMetrics metrics;
-    private final LatencyRecorder hotRecorder;
-    private final LatencyRecorder coldRecorder;
+//    private final LatencyRecorder hotRecorder;
+//    private final LatencyRecorder coldRecorder;
+    private final HdrLatencyRecorder hot = new HdrLatencyRecorder();
+    private final HdrLatencyRecorder cold = new HdrLatencyRecorder();
+    private final ConfigHolder config;
 
     /**
      * Dispatcher thread, submit task to ThreadPoolExecutor for asynchronous execution
@@ -58,17 +68,18 @@ public class DisruptorBusinessHandler implements EventHandler<TaskEvent> {
      * @param es
      */
 
-    public DisruptorBusinessHandler(int partitionId, ThreadPoolExecutor es, CompletionSink sink, ReleaseHook releaseHook) {
+    public DisruptorBusinessHandler(int partitionId, ThreadPoolExecutor es, CompletionSink sink,
+                                    ReleaseHook releaseHook, ConfigHolder config) {
         this.partitionId = partitionId;
         this.tpe = es;
-        this.metrics = new PartitionMetrics(new AtomicLong(0), new LongAdder(),new LongAdder(), new AtomicLong(0),
-                new AtomicLong(0), new AtomicLong(0));
+        this.metrics = new PartitionMetrics(new AtomicLong(0), new LongAdder(), new LongAdder(), new AtomicLong(0),
+                new AtomicLong(0), new AtomicLong(0), new AtomicInteger(0));
         this.sink = sink;
         this.releaseHook = releaseHook;
-        this.hotRecorder = new LatencyRecorder();
-        this.coldRecorder = new LatencyRecorder();
+//        this.hot = new HdrLatencyRecorder();
+//        this.cold = new HdrLatencyRecorder();
+        this.config = config;
     }
-
 
 
     @Override
@@ -77,7 +88,7 @@ public class DisruptorBusinessHandler implements EventHandler<TaskEvent> {
         metrics.onTaskIn();
         TaskObject cur = new TaskObject(event, endOfBatch);
         int familyKey = event.getCorrelationId();
-        familyKey = familyKey < 0 ? (int)event.getOrderId() % 18: familyKey;
+        familyKey = familyKey < 0 ? (int) event.getOrderId() % 18 : familyKey;
         FamilyState state = map.computeIfAbsent(familyKey, (_) -> new FamilyState(new AtomicInteger(0),
                 new LinkedBlockingQueue<>()));
         cur.setT1Enq(System.nanoTime());
@@ -86,9 +97,19 @@ public class DisruptorBusinessHandler implements EventHandler<TaskEvent> {
             metrics.onAddInFlightFamiliesCount();
             dispatchAndDrain(state, cur);
         } else {
-            state.getPending().offer(cur);
-            metrics.onEnqueuedDueToBusy();
-            metrics.onMaxPendingDepthObserved(state.getPending().size());
+            // Drop the TaskEvent if current family queue is over 1024 or whatever the pendingLimit is
+            if (state.getPendingCount() >= config.pendingLimit()) {
+                TaskResponse rejectOverLimitResponse = new TaskResponse(cur.getOrderId(), cur.getCorrelationId(),
+                        partitionId, cur.getSeqInFamily(), "REJ_OVER_LIMIT", System.nanoTime(), System.nanoTime(),
+                        cur.getPayload());
+                // still use the sink to send message back
+                sink.onComplete(cur, rejectOverLimitResponse);
+                metrics.onRejectedOverLimit();
+            } else {
+                state.enqueue(cur);
+                metrics.onEnqueuedDueToBusy();
+                metrics.onMaxPendingDepthObserved(state.getPendingCount());
+            }
         }
     }
 
@@ -150,10 +171,18 @@ public class DisruptorBusinessHandler implements EventHandler<TaskEvent> {
 
             if (taskObject.getCorrelationId() == 11) {
                 // hot
-                hotRecorder.record(e2e, qTotal, svc, execQ);
+                hot.recordE2e(e2e);
+                hot.recordSvc(svc);
+                hot.recordQ(qTotal);
+                hot.recordExecQ(execQ);
             } else {
-                coldRecorder.record(e2e, qTotal, svc, execQ);
+                // hot
+                cold.recordE2e(e2e);
+                cold.recordSvc(svc);
+                cold.recordQ(qTotal);
+                cold.recordExecQ(execQ);
             }
+
 
             return ctx;
         }, tpe).thenAccept((ctx -> {
@@ -233,20 +262,26 @@ public class DisruptorBusinessHandler implements EventHandler<TaskEvent> {
         }
         // mock downstream cost (10 - 20 ms)
         // don't sleep in real p99 benchmarking, but ok for mock
-        LockSupport.parkNanos(15_000_000); // park 15ms
+//        LockSupport.parkNanos(15_000_000);// park 15ms
+        LockSupport.parkNanos(1_000_000); // park 1ms
+        if (config.ALLOC_HOTSPOT()) {
+            byte[] fake = config.ALLOC_MITIGATION() ? TL_BUF.get() : new byte[256 * 1024];
+            ALLOC_SINK ^= fake[23];
+        }
         ctx.setExecResult("ACK");
         ctx.setT3(System.nanoTime());
     }
 
     /**
      * Stage 4: Build exactly one response
+     *
      * @param t
      * @param ctx
      * @return
      */
     private void buildResponse(TaskObject t, StageCtx ctx) {
         if (Decision.REJECT == ctx.getDecision()) {
-            ctx.setTaskResponse(new TaskResponse(t.getOrderId(), t.getCorrelationId(),partitionId, t.getSeqInFamily()
+            ctx.setTaskResponse(new TaskResponse(t.getOrderId(), t.getCorrelationId(), partitionId, t.getSeqInFamily()
                     , ctx.getDecision().toString(), ctx.getT0(), System.nanoTime(), t.getPayload()));
         } else {
             ctx.setTaskResponse(new TaskResponse(t.getOrderId(), t.getCorrelationId(), partitionId,
@@ -255,7 +290,8 @@ public class DisruptorBusinessHandler implements EventHandler<TaskEvent> {
         ctx.setT4(System.nanoTime());
     }
 
-    public record PendingStats(long familiesSeen, long familiesWithPending, long pendingTotal, long  pendingMaxNow) {}
+    public record PendingStats(long familiesSeen, long familiesWithPending, long pendingTotal, long pendingMaxNow) {
+    }
 
     public PendingStats samplePending() {
         long famSeen = this.map.size();
@@ -263,7 +299,7 @@ public class DisruptorBusinessHandler implements EventHandler<TaskEvent> {
         long pendingTotal = 0;
         long pendingMax = 0;
         for (var ent : map.entrySet()) {
-            int pendingSize = ent.getValue().getPending().size();
+            int pendingSize = ent.getValue().getPendingCount();
             if (pendingSize > 0) {
                 familiesWithPending++;
                 pendingTotal += pendingSize;
@@ -275,7 +311,7 @@ public class DisruptorBusinessHandler implements EventHandler<TaskEvent> {
 
 
     private void releaseLoop(FamilyState state, TaskObject event) {
-        TaskObject next = state.getPending().poll();
+        TaskObject next = state.dequeue();
         if (next != null) {
             metrics.onDispatched();
             dispatchAndDrain(state, next);
@@ -289,7 +325,7 @@ public class DisruptorBusinessHandler implements EventHandler<TaskEvent> {
             return;
         }
 
-        next = state.getPending().poll();
+        next = state.dequeue();
         // this windows is actually safe because busy flag is already rest to 0
         // If busy==0, producers are responsible for (re)starting the drain.
         if (next == null) {
@@ -335,15 +371,24 @@ public class DisruptorBusinessHandler implements EventHandler<TaskEvent> {
 
     }
 
-    public PartitionMetrics.PartitionMetricSnapshot snapshot(long nowNs) {
+    public PartitionMetrics.PartitionMetricSnapshot metricSnapshot(long nowNs) {
         return this.metrics.snapshot(nowNs, tpe.getPoolSize(), tpe.getActiveCount(), tpe.getQueue().size());
     }
 
-    public LatencyRecorder.LatencySnapshot hotLatencySnapshot() {
-        return this.hotRecorder.snapshot();
+    public int[] tpeState() {
+        return new int[]{tpe.getPoolSize(), tpe.getActiveCount(), tpe.getQueue().size()};
     }
 
-    public LatencyRecorder.LatencySnapshot coldLatencySnapshot() {
-        return this.coldRecorder.snapshot();
+
+    public PartitionMetrics metrics() {
+        return this.metrics;
+    }
+
+    public HdrLatencyRecorder.LatencySnapshot hotLatencySnapshot() {
+        return this.hot.snapshotInterval();
+    }
+
+    public HdrLatencyRecorder.LatencySnapshot coldLatencySnapshot() {
+        return this.cold.snapshotInterval();
     }
 }

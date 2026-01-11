@@ -17,8 +17,8 @@ import java.util.concurrent.TimeUnit;
 public class NettyClientHandler extends ChannelDuplexHandler {
 
     private static final Logger log = LoggerFactory.getLogger(NettyClientHandler.class);
-    private static final int LIMIT_HOT = 3_000; // 40k events
-    private static final int LIMIT_COLD = 300;
+    private static final int LIMIT_HOT = 120_000; // 40k events
+    private static final int LIMIT_COLD = 600;
     private int hotTask = 0;
     private int coldTask = 0;
     private int completed = 0;
@@ -34,7 +34,7 @@ public class NettyClientHandler extends ChannelDuplexHandler {
 //        sendOneTask(ctx);
 //        sendManayTask(ctx);
         // HOT
-        scheduleNext(ctx, 11, 20_000_000);
+        scheduleNext(ctx, 11, 500_000); // 2000 msg/s
         scheduleNext(ctx, 1000, 1049, 1_000_000_000);
     }
 

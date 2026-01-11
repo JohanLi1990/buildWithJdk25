@@ -3,13 +3,19 @@ package disruptor.practice.oms.monitoring;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.LongAdder;
 
 public record PartitionMetrics(AtomicLong tasksIn, LongAdder completed, LongAdder dispatched,
-                               AtomicLong enqueuedDueToBusy, AtomicLong maxPendingDepthObserved, AtomicLong inFlightFamiliesCount) {
+                               AtomicLong enqueuedDueToBusy, AtomicLong maxPendingDepthObserved,
+                               AtomicLong inFlightFamiliesCount, AtomicInteger rejOverLimit) {
     private static final Logger LOGGER = LoggerFactory.getLogger(PartitionMetrics.class);
 
+    public void onRejectedOverLimit() {
+        this.rejOverLimit.incrementAndGet();
+
+    }
     public void onTaskIn() {
         this.tasksIn.incrementAndGet();
     }

@@ -9,7 +9,9 @@ import disruptor.practice.oms.handlers.DisruptorBusinessHandler;
 import disruptor.practice.oms.handlers.NettyIOHandler;
 import disruptor.practice.oms.handlers.codec.NettyOrderEventDecoder;
 import disruptor.practice.oms.handlers.codec.NettyOrderEventEncoder;
+import disruptor.practice.oms.model.ConfigHolder;
 import disruptor.practice.oms.model.TaskEvent;
+import disruptor.practice.oms.monitoring.HdrLatencyRecorder;
 import disruptor.practice.oms.monitoring.LatencyRecorder;
 import disruptor.practice.oms.monitoring.PartitionMetrics;
 import io.netty.bootstrap.ServerBootstrap;
@@ -36,6 +38,7 @@ public class DisruptorNettyOMSServer extends GenericNettyServer {
     private static final Logger log = LoggerFactory.getLogger(DisruptorNettyOMSServer.class);
     private final List<Disruptor<TaskEvent>> disruptors;
     private final int N = 8;
+
     private final CompletionSink nettySink = (t, res) -> {
         Channel channel = t.getChannel();
         channel.eventLoop().execute(() -> {
@@ -50,11 +53,14 @@ public class DisruptorNettyOMSServer extends GenericNettyServer {
     private final ScheduledExecutorService statsScheduler = Executors.newSingleThreadScheduledExecutor(r -> {
         Thread thread = new Thread(r, "stat-logger");
         thread.setDaemon(true);
+        thread.setUncaughtExceptionHandler((th, ex) -> log.error("Uncaught in {}", th.getName(), ex));
         return thread;
     });
 
     // per-partition previous snapshot
     private final ConcurrentHashMap<Integer, PartitionMetrics.PartitionMetricSnapshot> prev = new ConcurrentHashMap<>();
+
+    private final ConfigHolder config = new ConfigHolder(true, true, false, 32);
 
     public DisruptorNettyOMSServer(int port) {
         super(port);
@@ -74,7 +80,7 @@ public class DisruptorNettyOMSServer extends GenericNettyServer {
         // inject a dummy release hook here;
         // release hook is mostly used in tests
         DisruptorBusinessHandler handler = new DisruptorBusinessHandler(partitionId, es, nettySink, (_, _) -> {
-        });
+        }, config);
         cur.handleEventsWith(handler);
         handlers.put(partitionId, handler);
         cur.start();
@@ -88,35 +94,47 @@ public class DisruptorNettyOMSServer extends GenericNettyServer {
         // Log every 1 second
         if (partitionId != 3) return;
         statsScheduler.scheduleAtFixedRate(() -> {
-//            partitionMetricsLogging(partitionId);
-            partitionLatencyLogging(partitionId);
+            try {
+                //            partitionMetricsLogging(partitionId);
+                partitionLatencyLogging(partitionId);
+            } catch (Throwable t) {
+                log.error("stat-logger task failed for partition {}", partitionId, t);
+            }
+
         }, 5, 5, TimeUnit.SECONDS);
     }
 
     private void partitionLatencyLogging(int partitionId) {
         DisruptorBusinessHandler h = handlers.get(partitionId);
         if (h == null) return;
-        LatencyRecorder.LatencySnapshot hotSnap = h.hotLatencySnapshot();
-        LatencyRecorder.LatencySnapshot coldSnap = h.coldLatencySnapshot();
-        DisruptorBusinessHandler.PendingStats pendingStats = h.samplePending();
-        PartitionMetrics.PartitionMetricSnapshot curSnap = h.snapshot(System.nanoTime());
-        log.info("P{}: \nHOT\n{}\n---------\nCOLD\n{}", partitionId, hotSnap, coldSnap);
-        log.info("P{}: pendingMax{} tpe(pool={} active={} q={})", partitionId, pendingStats.pendingMaxNow(),
-                curSnap.poolSize(),
-                curSnap.activeThreads(), curSnap.qSize());
+        HdrLatencyRecorder.LatencySnapshot hotSnap = h.hotLatencySnapshot();
+        HdrLatencyRecorder.LatencySnapshot coldSnap = h.coldLatencySnapshot();
+        PartitionMetrics metrics = h.metrics();
+        int[] tpeStatistics = h.tpeState();
+        log.info("""
+                        P{}:\s
+                        HOT
+                        {}
+                        ---------
+                        COLD
+                        {}
+                        ---------
+                        pendingMaxSoFar={} rejectOverLimit={} tpe(pool={} active={} q={})""",
+                partitionId, hotSnap, coldSnap, metrics.maxPendingDepthObserved().get(), metrics.rejOverLimit().get(),
+                tpeStatistics[0], tpeStatistics[1], tpeStatistics[2]);
     }
 
     private void partitionMetricsLogging(int partitionId) {
         DisruptorBusinessHandler h = handlers.get(partitionId);
         if (h == null) return;
         long nowNs = System.nanoTime();
-        PartitionMetrics.PartitionMetricSnapshot curSnap = h.snapshot(nowNs);
+        PartitionMetrics.PartitionMetricSnapshot curSnap = h.metricSnapshot(nowNs);
         PartitionMetrics.PartitionMetricSnapshot prevSnap = prev.put(partitionId, curSnap);
         // First tick no delta yet
         if (prevSnap == null) return;
         long dtNs = curSnap.nanoNs() - prevSnap.nanoNs();
         if (dtNs <= 0) return;
-        double dtSec  = dtNs / 1_000_000_000.0;
+        double dtSec = dtNs / 1_000_000_000.0;
         long inDelta = curSnap.taskIn() - prevSnap.taskIn();
         long dispDelta = curSnap.dispatched() - prevSnap.dispatched();
         long doneDelta = curSnap.completed() - prevSnap.completed();
@@ -169,7 +187,7 @@ public class DisruptorNettyOMSServer extends GenericNettyServer {
 
     private ThreadPoolExecutor createDisruptorWorkerPool(int partitionId) {
         ThreadFactory tFactory = r -> new Thread(r, "TW-" + partitionId);
-        var es = new ThreadPoolExecutor(4, 8, 10, TimeUnit.SECONDS, new ArrayBlockingQueue<>(8), tFactory);
+        var es = new ThreadPoolExecutor(6, 12, 10, TimeUnit.SECONDS, new ArrayBlockingQueue<>(8), tFactory);
         es.setRejectedExecutionHandler((r, exec) -> {
             log.error("TPE REJECTED task. partition={} poolSize={} active={} completed={} taskCount={}",
                     partitionId, exec.getPoolSize(), exec.getActiveCount(), exec.getCompletedTaskCount(), exec.getTaskCount());

@@ -7,6 +7,7 @@ import com.lmax.disruptor.dsl.ProducerType;
 import com.lmax.disruptor.util.DaemonThreadFactory;
 import disruptor.practice.common.CompletionSink;
 import disruptor.practice.common.ReleaseHook;
+import disruptor.practice.oms.model.ConfigHolder;
 import disruptor.practice.oms.model.TaskEvent;
 import disruptor.practice.oms.model.TaskObject;
 import disruptor.practice.oms.model.TaskResponse;
@@ -140,7 +141,7 @@ class DisruptorBusinessHandlerTest {
             int seq = sequenceGenerator.get(family).incrementAndGet();
             TaskObject to = new TaskObject(-1, family, seq, null, false,
                     "Injected@"+seq, 0L);
-            familyState.getPending().offer(to);
+            familyState.enqueue(to);
         };
 
         Disruptor<TaskEvent> testThreeDisruptor = createOneTestDisruptor(sink, testReleaseHook, 1024);
@@ -212,7 +213,8 @@ class DisruptorBusinessHandlerTest {
         Disruptor<TaskEvent> cur = new Disruptor<>(TaskEvent::new, ringSize, DaemonThreadFactory.INSTANCE,
                 ProducerType.MULTI, new BlockingWaitStrategy());
         ThreadPoolExecutor testWorkerPool = createTestDisruptorWorkerPool();
-        cur.handleEventsWith(new DisruptorBusinessHandler(0, testWorkerPool, sink, hook));
+        cur.handleEventsWith(new DisruptorBusinessHandler(0, testWorkerPool, sink, hook, new ConfigHolder(false,
+                false, false, 2048)));
         cur.start();
         return cur;
     }

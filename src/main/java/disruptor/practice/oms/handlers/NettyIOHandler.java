@@ -32,6 +32,7 @@ public class NettyIOHandler extends SimpleChannelInboundHandler<TaskEvent> {
     private long rejectsBusy = 0L;
     private static final Logger LOGGER = LoggerFactory.getLogger(NettyIOHandler.class);
 
+
     public NettyIOHandler(List<Disruptor<TaskEvent>> disruptors) {
         this.disruptors = disruptors;
         N = disruptors.size();
@@ -41,7 +42,7 @@ public class NettyIOHandler extends SimpleChannelInboundHandler<TaskEvent> {
     protected void channelRead0(ChannelHandlerContext ctx, TaskEvent msg) throws Exception {
         totalCounts++;
 //        LOGGER.info("published: {}, rejected:{}", totalCounts - rejectsBusy, rejectsBusy);
-        if ((totalCounts & 255) == 0) {
+        if ((totalCounts & 4095) == 0) {
             LOGGER.info("published: {}, rejected:{}", totalCounts - rejectsBusy, rejectsBusy);
         }
         // compute partitions
